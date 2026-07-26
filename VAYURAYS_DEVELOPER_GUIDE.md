@@ -338,5 +338,5 @@ To package and release your custom app:
        ├── index.html
        └── assets/
    ```
-4. **Deploy**: Copy the `PointsView` folder into `C:\TT\VayuRays\VayuRays.Service\customApps\PointsView\`.
+4. **Deploy**: Copy the `PointsView` folder into `C:\Program Files\VayuRays\VayuRays.Service\customApps\PointsView\`.
 5. **Restart Service**: Restart `VayuRays DATA Acquisition Service`. The host will auto-discover your custom app and present it in the navigation tree.
