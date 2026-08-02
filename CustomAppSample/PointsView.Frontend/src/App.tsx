@@ -4,6 +4,7 @@ import {
   ArrowUpDown, Server, Network, Hash
 } from 'lucide-react';
 import './App.css';
+import { useVayuTheme } from './hooks/useVayuTheme';
 
 interface PointItem {
   id: number;
@@ -104,6 +105,7 @@ const formatValue = (point: PointItem, val: number | null): string => {
 };
 
 export const App: React.FC = () => {
+  useVayuTheme();
   const [points, setPoints] = useState<PointItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
