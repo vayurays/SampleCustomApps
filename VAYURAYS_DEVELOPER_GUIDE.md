@@ -6,7 +6,7 @@ Welcome to the **VayuRays Developer Guide**. This document is designed for third
 
 ## 1. Architectural Overview
 
-VayuRays follows a modular, Niagara-style extensibility framework. The core system consists of the following components:
+VayuRays follows a modular extensibility framework. The core system consists of the following components:
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -44,8 +44,9 @@ VayuRays follows a modular, Niagara-style extensibility framework. The core syst
 
 ### Core Extensibility Concepts
 * **Host Service**: `VayuRays.Service` hosts Kestrel web server (default HTTP port 5000) and the background acquisition worker.
-* **Plugin Drop-in Location**: Custom plugins reside in `customApps/{PluginName}/` relative to the service execution folder.
+* **Plugin Drop-in Location**: Custom plugins reside in `customApps/{PluginName}/` relative to the service execution folder. Custom protocol drivers reside in `customDrivers/{DriverName}/`.
 * **Backend Extension**: Drop a `{PluginName}.dll` into `customApps/{PluginName}/`. The service dynamically loads it into ASP.NET Core at startup, registering its API routes and `IVayuModule` services.
+* **Custom Driver Extension**: Drop a `{DriverName}.dll` into `customDrivers/{DriverName}/`. The application dynamically loads it at startup, discovering any implementations of `IVayuDriverModule` and `IProtocolDriver`.
 * **Frontend Extension**: Place built static web assets in `customApps/{PluginName}/dist/`. The host serves these under `/apps/{PluginName}/index.html`.
 * **UI Integration**: The `VayuRays.WebClient` automatically discovers all installed custom apps via `/api/customapps` and renders them in the sidebar tree. Clicking an app embeds it in an `iframe` with the user's JWT token passed via URL query parameters.
 
@@ -198,6 +199,40 @@ public class PointsViewController : ControllerBase
 }
 ```
 
+### Logging Audit Events (`IVayuAuditLogger`)
+Backend controllers can inject `IVayuAuditLogger` to record security or system events to the VayuRays audit log. This ensures custom apps meet IEC 62443 compliance requirements for security event tracking.
+
+```csharp
+using VayuRays.Core.Extensibility;
+
+// Inside your controller:
+private readonly IVayuAuditLogger _auditLogger;
+
+public PointsViewController(IVayuAuditLogger auditLogger)
+{
+    _auditLogger = auditLogger;
+}
+
+[HttpPost("action")]
+public async Task<IActionResult> PerformAction()
+{
+    var username = User.Identity?.Name ?? "Unknown";
+    var ip = HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Unknown";
+    
+    // Log the event
+    await _auditLogger.LogEventAsync(
+        eventType: "CUSTOM_ACTION",
+        category: "CustomApp",
+        username: username,
+        severity: "INFO",
+        details: $"User performed action from IP {ip}",
+        pluginName: "PointsView"
+    );
+
+    return Ok();
+}
+```
+
 ---
 
 ## 4. Frontend Plugin Development (React / TS / HTML)
@@ -264,6 +299,84 @@ const connectWebSocket = (onUpdate: (pointUpdate: any) => void) => {
     setTimeout(() => connectWebSocket(onUpdate), 3000);
   };
 };
+```
+
+### Inheriting the Host Theme (Light / Dark Mode)
+The VayuRays WebClient passes its active theme down to Custom Apps so they can seamlessly blend with the host interface. This is passed in two ways:
+1. **On Load:** The host appends `&theme=light` or `&theme=dark` to the iframe's URL query string.
+2. **On Change:** When the user toggles the theme in the host, it broadcasts a `postMessage` event to all iframes so they can update dynamically without reloading.
+
+**Vanilla HTML/JS Example:**
+```html
+<style>
+  /* Define your CSS variables for light and dark modes */
+  :root {
+    --bg-color: #ffffff;
+    --text-color: #333333;
+  }
+  
+  :root[data-theme="dark"] {
+    --bg-color: #1a1a1a;
+    --text-color: #ffffff;
+  }
+
+  body {
+    background: var(--bg-color);
+    color: var(--text-color);
+    transition: background 0.3s, color 0.3s;
+  }
+</style>
+
+<script>
+  // 1. Read the initial theme from the URL query parameters on load
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlTheme = urlParams.get('theme');
+  const initialTheme = (urlTheme === 'dark' || urlTheme === 'light') 
+    ? urlTheme 
+    : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', initialTheme);
+
+  // 2. Listen for theme change messages from the parent WebClient window
+  window.addEventListener('message', (event) => {
+    // Security check: Make sure the message is a theme change
+    if (event.data && event.data.type === 'THEME_CHANGED') {
+      document.documentElement.setAttribute('data-theme', event.data.theme);
+    }
+  });
+</script>
+```
+
+**React / TS Example (Tailwind CSS compatible):**
+```typescript
+import { useEffect, useState } from 'react';
+
+export function useVayuTheme() {
+  const [theme, setTheme] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlTheme = params.get('theme');
+    if (urlTheme === 'dark' || urlTheme === 'light') return urlTheme;
+    // Fallback to system preference if testing standalone in debug
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'THEME_CHANGED') {
+        setTheme(event.data.theme);
+        // Toggle the 'dark' class on the document root (for Tailwind)
+        if (event.data.theme === 'dark') document.documentElement.classList.add('dark');
+        else document.documentElement.classList.remove('dark');
+      }
+    };
+    
+    // Set initial class
+    if (theme === 'dark') document.documentElement.classList.add('dark');
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  return theme;
+}
 ```
 
 ---
@@ -338,5 +451,105 @@ To package and release your custom app:
        ├── index.html
        └── assets/
    ```
-4. **Deploy**: Copy the `PointsView` folder into `C:\Program Files\VayuRays\VayuRays.Service\customApps\PointsView\`.
+4. **Deploy**: Copy the `PointsView` folder into `C:\TT\VayuRays\VayuRays.Service\customApps\PointsView\`.
 5. **Restart Service**: Restart `VayuRays DATA Acquisition Service`. The host will auto-discover your custom app and present it in the navigation tree.
+
+---
+
+## 8. Custom Protocol Drivers (.NET)
+
+VayuRays supports dropping in custom protocol drivers (e.g., for proprietary hardware or IoT devices) alongside the native BACnet and Modbus drivers.
+
+### Project Setup
+Create a .NET Class Library project (targeting `net10.0` or `.NET 8/9` compatible). Add a reference to `VayuRays.Core.dll`.
+
+### Implementing `IVayuDriverModule`
+Every custom driver must implement `IVayuDriverModule` to register itself:
+
+```csharp
+using System.Collections.Generic;
+using VayuRays.Core.Extensibility;
+using VayuRays.Core.Models;
+
+namespace MyCustomDriver;
+
+public class MyDriverModule : IVayuDriverModule
+{
+    public string Name => "MyCustomDriver";
+    public string Description => "A custom protocol driver for MyDevice";
+
+    public IEnumerable<ProtocolKey> GetSupportedProtocols()
+    {
+        // Must use an ID >= 100 for custom protocols to avoid conflicting with built-in ones
+        yield return new ProtocolKey(100, "MyProtocol");
+    }
+
+    public IProtocolDriver CreateDriver(ProtocolKey protocolKey)
+    {
+        if (protocolKey.Id == 100)
+        {
+            return new MyProtocolDriver();
+        }
+        return null;
+    }
+}
+```
+
+### Implementing `IProtocolDriver`
+The `IProtocolDriver` implementation handles discovering, connecting, and reading data from devices.
+
+```csharp
+using System.Threading;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using Microsoft.Extensions.Logging;
+using VayuRays.Core.Extensibility;
+using VayuRays.Core.Models;
+
+namespace MyCustomDriver;
+
+public class MyProtocolDriver : IProtocolDriver
+{
+    public Task InitializeAsync(ILogger logger, Dictionary<string, string> appSettings, CancellationToken cancellationToken)
+    {
+        // Initialize connection pools, background threads, or configuration here
+        return Task.CompletedTask;
+    }
+
+    public Task<List<DiscoveredDevice>> DiscoverDevicesAsync(CancellationToken cancellationToken)
+    {
+        // Broadcast or scan for devices on the network
+        return Task.FromResult(new List<DiscoveredDevice>());
+    }
+
+    public Task<List<DiscoveredPoint>> DiscoverPointsAsync(string deviceId, string deviceAddress, CancellationToken cancellationToken)
+    {
+        // Interrogate a specific device for its available points
+        return Task.FromResult(new List<DiscoveredPoint>());
+    }
+
+    public Task<PointReadResult> ReadPointAsync(string deviceId, string deviceAddress, string pointIdentifier, CancellationToken cancellationToken)
+    {
+        // Read a single point's value
+        return Task.FromResult(new PointReadResult { Value = 42.0, IsSuccess = true });
+    }
+
+    public Task<Dictionary<string, PointReadResult>> ReadPointsBatchAsync(string deviceId, string deviceAddress, List<string> pointIdentifiers, CancellationToken cancellationToken)
+    {
+        // (Optional) Optimize reading multiple points from the same device
+        var results = new Dictionary<string, PointReadResult>();
+        foreach (var id in pointIdentifiers)
+        {
+            results[id] = new PointReadResult { Value = 42.0, IsSuccess = true };
+        }
+        return Task.FromResult(results);
+    }
+}
+```
+
+### Deployment
+Compile your driver to produce `{DriverName}.dll`. Drop the DLL into:
+1. `C:\Program Files\VayuRays\Service\customDrivers\{DriverName}\` (for the Service)
+2. `C:\Program Files\VayuRays\ConfigApp\customDrivers\{DriverName}\` (for the Config App)
+
+Upon restarting the applications, the new protocol will automatically appear in the Device Explorer protocol dropdown, and the Worker will be able to poll points associated with that protocol.
