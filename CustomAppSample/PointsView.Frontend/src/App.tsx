@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Table, Search, RefreshCw, Activity, CheckCircle, AlertCircle, 
-  ArrowUpDown, Server, Network, Hash
+  ArrowUpDown, Server, Network, Hash, Calculator, ToggleLeft, 
+  List, Type, Zap, Gauge, Filter
 } from 'lucide-react';
 import './App.css';
 import { useVayuTheme } from './hooks/useVayuTheme';
@@ -16,14 +17,24 @@ interface PointItem {
   networkName: string;
   hasCommunicationError: boolean;
   objectCategory: string;
+  pointType: string;
+  protocol: string;
   stateTextJson?: string;
   trueText?: string;
   falseText?: string;
+  decimalPrecision?: number;
+  isWritable: boolean;
+  isManual: boolean;
+  isMathBlock: boolean;
+  mathExpression?: string;
+  operation?: string;
+  errorMessage?: string;
   lastUpdated?: string;
 }
 
-type SortField = 'pointName' | 'unit' | 'presentValue' | 'deviceName' | 'networkName';
+type SortField = 'pointName' | 'unit' | 'presentValue' | 'deviceName' | 'networkName' | 'pointType' | 'protocol';
 type SortOrder = 'asc' | 'desc';
+type CategoryFilter = 'All' | 'Analog' | 'Binary' | 'MultiState' | 'Math' | 'Manual' | 'String';
 
 const bacnetUnits: Record<string, string> = {
   '0': 'sq meters', '1': 'sq feet', '2': 'milliamps', '3': 'amps',
@@ -38,34 +49,11 @@ const bacnetUnits: Record<string, string> = {
   '26': 'cycles-per-minute', '27': 'hertz', '28': 'grams-of-water-per-kg-dry-air',
   '29': 'percent-relative-humidity', '30': 'millimeters',
   '31': 'meters', '32': 'inches', '33': 'feet',
-  '34': 'watts-per-sq-foot', '35': 'watts-per-sq-meter',
-  '36': 'lumens', '37': 'luxes', '38': 'foot-candles',
-  '39': 'kilograms', '40': 'pounds-mass', '41': 'tons',
-  '42': 'kgs-per-second', '43': 'kgs-per-minute', '44': 'kgs-per-hour',
-  '45': 'pounds-mass-per-minute', '46': 'pounds-mass-per-hour',
   '47': 'watts', '48': 'kilowatts', '49': 'megawatts',
-  '50': 'BTUs-per-hour', '51': 'horsepower',
-  '52': 'tons-refrigeration', '53': 'pascals', '54': 'kilopascals',
-  '55': 'bars', '56': 'psi', '57': 'centimeters-of-water',
-  '58': 'inches-of-water', '59': 'mm-of-mercury', '60': 'cm-of-mercury',
-  '61': 'inches-of-mercury', '62': '°C', '63': '°K',
-  '64': '°F', '65': 'degree-days-celsius', '66': 'degree-days-fahrenheit',
-  '67': 'years', '68': 'months', '69': 'weeks',
-  '70': 'days', '71': 'hours', '72': 'minutes',
-  '73': 'seconds', '74': 'meters-per-second', '75': 'km/h',
-  '76': 'feet-per-second', '77': 'feet-per-minute', '78': 'mph',
-  '79': 'cubic-feet', '80': 'cubic-meters', '81': 'imperial-gallons',
-  '82': 'liters', '83': 'us-gallons',
-  '84': 'cubic-feet-per-minute', '85': 'cubic-meters-per-second',
-  '86': 'imperial-gallons-per-minute', '87': 'liters-per-second',
-  '88': 'liters-per-minute', '89': 'us-gallons-per-minute',
-  '90': 'degrees-angular', '91': 'degrees-celsius-per-hour',
-  '92': 'degrees-celsius-per-minute', '93': 'degrees-fahrenheit-per-hour',
-  '94': 'degrees-fahrenheit-per-minute', '95': 'no-units',
-  '96': 'parts-per-million', '97': 'parts-per-billion',
-  '98': '%', '99': 'percent-per-second',
-  '100': 'per-minute', '101': 'per-second',
-  '102': 'psi-per-degree-fahrenheit', '103': 'radians',
+  '53': 'pascals', '54': 'kilopascals', '55': 'bars', '56': 'psi',
+  '62': '°C', '63': '°K', '64': '°F',
+  '71': 'hours', '72': 'minutes', '73': 'seconds',
+  '95': 'no-units', '98': '%',
   '104': 'rev-per-minute',
 };
 
@@ -93,7 +81,8 @@ const formatValue = (point: PointItem, val: number | null): string => {
       try {
         const enums = JSON.parse(point.stateTextJson);
         if (Array.isArray(enums) && enums.length > 0) {
-          const idx = Math.round(num) - 1; // 1-indexed for BACnet
+          // Manual enum points use 0-based index, BACnet multi-state uses 1-based
+          const idx = point.isManual ? Math.round(num) : Math.round(num) - 1;
           return idx >= 0 && idx < enums.length ? enums[idx] : `State ${Math.round(num)}`;
         }
       } catch { /* ignore */ }
@@ -101,8 +90,32 @@ const formatValue = (point: PointItem, val: number | null): string => {
     return String(Math.round(num));
   }
 
-  return num.toFixed(2);
+  if (category === 'String') return '--';
+
+  const precision = point.decimalPrecision ?? 2;
+  return num.toFixed(precision);
 };
+
+const getPointTypeIcon = (pointType: string) => {
+  switch (pointType) {
+    case 'Numeric': return <Gauge size={13} />;
+    case 'Boolean': return <ToggleLeft size={13} />;
+    case 'Enum': return <List size={13} />;
+    case 'Math': return <Calculator size={13} />;
+    case 'String': return <Type size={13} />;
+    default: return <Hash size={13} />;
+  }
+};
+
+const categoryFilters: { key: CategoryFilter; label: string; icon: React.ReactNode }[] = [
+  { key: 'All', label: 'All', icon: <Filter size={14} /> },
+  { key: 'Analog', label: 'Analog', icon: <Gauge size={14} /> },
+  { key: 'Binary', label: 'Binary', icon: <ToggleLeft size={14} /> },
+  { key: 'MultiState', label: 'Multi-State', icon: <List size={14} /> },
+  { key: 'Math', label: 'Math / Logic', icon: <Calculator size={14} /> },
+  { key: 'Manual', label: 'Manual', icon: <Zap size={14} /> },
+  { key: 'String', label: 'String', icon: <Type size={14} /> },
+];
 
 export const App: React.FC = () => {
   useVayuTheme();
@@ -112,6 +125,7 @@ export const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [sortField, setSortField] = useState<SortField>('pointName');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('All');
   const [updatedPointIds, setUpdatedPointIds] = useState<Set<string>>(new Set());
   const [wsConnected, setWsConnected] = useState<boolean>(false);
 
@@ -164,7 +178,6 @@ export const App: React.FC = () => {
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('PointsView WebSocket connected for live values');
         setWsConnected(true);
       };
 
@@ -177,7 +190,8 @@ export const App: React.FC = () => {
                 return {
                   ...p,
                   presentValue: update.value !== undefined ? update.value : p.presentValue,
-                  hasCommunicationError: update.hasCommunicationError !== undefined ? update.hasCommunicationError : p.hasCommunicationError
+                  hasCommunicationError: update.hasCommunicationError !== undefined ? update.hasCommunicationError : p.hasCommunicationError,
+                  errorMessage: update.errorMessage !== undefined ? update.errorMessage : p.errorMessage
                 };
               }
               return p;
@@ -203,8 +217,8 @@ export const App: React.FC = () => {
         }
       };
 
-      ws.onerror = (e) => {
-        console.warn('PointsView WebSocket error:', e);
+      ws.onerror = () => {
+        // silently handled by onclose reconnect
       };
 
       ws.onclose = () => {
@@ -233,9 +247,29 @@ export const App: React.FC = () => {
     }
   };
 
+  // Stats
+  const stats = useMemo(() => {
+    const total = points.length;
+    const online = points.filter(p => !p.hasCommunicationError && !p.errorMessage).length;
+    const errors = points.filter(p => p.hasCommunicationError || !!p.errorMessage).length;
+    const manual = points.filter(p => p.isManual).length;
+    const mathBlocks = points.filter(p => p.isMathBlock).length;
+    return { total, online, errors, manual, mathBlocks };
+  }, [points]);
+
   const filteredAndSortedPoints = useMemo(() => {
     return points
       .filter(p => {
+        // Category filter
+        if (categoryFilter !== 'All') {
+          if (categoryFilter === 'Manual') {
+            if (!p.isManual) return false;
+          } else {
+            if (p.objectCategory !== categoryFilter) return false;
+          }
+        }
+
+        // Search filter
         const query = searchQuery.toLowerCase().trim();
         if (!query) return true;
         return (
@@ -243,7 +277,10 @@ export const App: React.FC = () => {
           p.pointIdentifier.toLowerCase().includes(query) ||
           p.deviceName.toLowerCase().includes(query) ||
           p.networkName.toLowerCase().includes(query) ||
-          p.unit.toLowerCase().includes(query)
+          (p.unit && p.unit.toLowerCase().includes(query)) ||
+          p.pointType.toLowerCase().includes(query) ||
+          p.protocol.toLowerCase().includes(query) ||
+          (p.mathExpression && p.mathExpression.toLowerCase().includes(query))
         );
       })
       .sort((a, b) => {
@@ -263,7 +300,7 @@ export const App: React.FC = () => {
           ? (valA > valB ? 1 : -1) 
           : (valA < valB ? 1 : -1);
       });
-  }, [points, searchQuery, sortField, sortOrder]);
+  }, [points, searchQuery, sortField, sortOrder, categoryFilter]);
 
   return (
     <div className="app-container">
@@ -273,7 +310,7 @@ export const App: React.FC = () => {
           <Table className="title-icon" size={28} />
           <div className="title-text">
             <h1>PointsView</h1>
-            <p>Live Tabular Data View & Real-time Point Explorer</p>
+            <p>Live Tabular Data View &amp; Real-time Point Explorer</p>
           </div>
         </div>
 
@@ -289,29 +326,62 @@ export const App: React.FC = () => {
           </div>
 
           <div className="live-indicator" title={wsConnected ? "Real-time WebSocket connected" : "Connecting..."}>
-            <span className="pulse-dot"></span>
-            <span>{wsConnected ? "LIVE UPDATE" : "CONNECTING"}</span>
+            <span className={`pulse-dot ${wsConnected ? '' : 'disconnected'}`}></span>
+            <span>{wsConnected ? "LIVE" : "OFFLINE"}</span>
           </div>
 
           <button 
             className="btn-icon" 
             onClick={fetchPoints} 
             title="Refresh Data"
-            style={{
-              padding: '0.6rem',
-              borderRadius: 'var(--radius-md)',
-              border: '1px solid var(--border-color)',
-              background: 'rgba(15, 23, 42, 0.6)',
-              color: 'var(--text-primary)',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center'
-            }}
           >
             <RefreshCw size={16} className={loading ? 'spin' : ''} />
           </button>
         </div>
       </header>
+
+      {/* Stats Bar */}
+      <div className="stats-bar">
+        <div className="stat-item">
+          <Hash size={14} />
+          <span className="stat-value">{stats.total}</span>
+          <span className="stat-label">Total</span>
+        </div>
+        <div className="stat-item online">
+          <CheckCircle size={14} />
+          <span className="stat-value">{stats.online}</span>
+          <span className="stat-label">Online</span>
+        </div>
+        <div className="stat-item error">
+          <AlertCircle size={14} />
+          <span className="stat-value">{stats.errors}</span>
+          <span className="stat-label">Errors</span>
+        </div>
+        <div className="stat-item manual">
+          <Zap size={14} />
+          <span className="stat-value">{stats.manual}</span>
+          <span className="stat-label">Manual</span>
+        </div>
+        <div className="stat-item math">
+          <Calculator size={14} />
+          <span className="stat-value">{stats.mathBlocks}</span>
+          <span className="stat-label">Math</span>
+        </div>
+      </div>
+
+      {/* Category Filter Chips */}
+      <div className="filter-chips">
+        {categoryFilters.map(cf => (
+          <button
+            key={cf.key}
+            className={`filter-chip ${categoryFilter === cf.key ? 'active' : ''}`}
+            onClick={() => setCategoryFilter(cf.key)}
+          >
+            {cf.icon}
+            <span>{cf.label}</span>
+          </button>
+        ))}
+      </div>
 
       {/* Main Content Area */}
       <main className="glass-card" style={{ flex: 1, padding: '1rem', display: 'flex', flexDirection: 'column' }}>
@@ -357,18 +427,23 @@ export const App: React.FC = () => {
                   <th onClick={() => handleSort('pointName')}>
                     Point Name <ArrowUpDown size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
                   </th>
-                  <th>Identifier</th>
+                  <th onClick={() => handleSort('pointType')}>
+                    Type <ArrowUpDown size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
+                  </th>
                   <th onClick={() => handleSort('unit')}>
                     Unit <ArrowUpDown size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
                   </th>
                   <th onClick={() => handleSort('presentValue')}>
-                    Present Value <Activity size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
+                    Value <Activity size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
+                  </th>
+                  <th onClick={() => handleSort('protocol')}>
+                    Protocol <ArrowUpDown size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
                   </th>
                   <th onClick={() => handleSort('deviceName')}>
-                    Device Name <Server size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
+                    Device <Server size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
                   </th>
                   <th onClick={() => handleSort('networkName')}>
-                    Network Name <Network size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
+                    Network <Network size={14} style={{ verticalAlign: 'middle', marginLeft: 4 }} />
                   </th>
                   <th>Status</th>
                 </tr>
@@ -377,20 +452,36 @@ export const App: React.FC = () => {
                 {filteredAndSortedPoints.map(point => {
                   const isUpdated = updatedPointIds.has(point.pointIdentifier);
                   const isOffline = point.hasCommunicationError;
+                  const hasError = !!point.errorMessage;
 
                   return (
-                    <tr key={point.id} className={isUpdated ? 'value-updated' : ''}>
+                    <tr 
+                      key={point.id} 
+                      className={`${isUpdated ? 'value-updated' : ''} ${hasError ? 'has-error' : ''}`}
+                      title={hasError ? `Error: ${point.errorMessage}` : ''}
+                    >
                       <td>
                         <div className="point-name">{point.pointName}</div>
+                        {point.isMathBlock && point.mathExpression && (
+                          <div className="math-expr">ƒ {point.mathExpression}</div>
+                        )}
                       </td>
                       <td>
-                        <span className="point-id">{point.pointIdentifier}</span>
+                        <span className={`type-badge type-${point.pointType.toLowerCase()}`}>
+                          {getPointTypeIcon(point.pointType)}
+                          {point.pointType}
+                        </span>
                       </td>
                       <td>
                         <span className="badge-tag">{formatUnitText(point.unit)}</span>
                       </td>
                       <td className="value-cell">
                         {formatValue(point, point.presentValue)}
+                      </td>
+                      <td>
+                        <span className={`protocol-badge proto-${point.protocol.toLowerCase()}`}>
+                          {point.protocol}
+                        </span>
                       </td>
                       <td>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
@@ -405,10 +496,17 @@ export const App: React.FC = () => {
                         </span>
                       </td>
                       <td>
-                        <span className={`status-badge ${isOffline ? 'offline' : 'online'}`}>
-                          {isOffline ? <AlertCircle size={14} /> : <CheckCircle size={14} />}
-                          {isOffline ? 'Offline' : 'Online'}
-                        </span>
+                        {hasError ? (
+                          <span className="status-badge error-badge" title={point.errorMessage}>
+                            <AlertCircle size={14} />
+                            Error
+                          </span>
+                        ) : (
+                          <span className={`status-badge ${isOffline ? 'offline' : 'online'}`}>
+                            {isOffline ? <AlertCircle size={14} /> : <CheckCircle size={14} />}
+                            {isOffline ? 'Offline' : 'Online'}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );
